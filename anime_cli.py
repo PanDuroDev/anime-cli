@@ -266,29 +266,42 @@ KEY_A = "a"
 KEY_UNKNOWN = "unknown"
 
 _in_raw_mode = False
+_raw_fd = None
 
 class RawModeContext:
     def __enter__(self):
-        global _in_raw_mode
+        global _in_raw_mode, _raw_fd
         if os.name != 'nt' and sys.stdin.isatty():
             try:
                 self.fd = sys.stdin.fileno()
                 self.old_settings = termios.tcgetattr(self.fd)
-                tty.setraw(self.fd)
+                
+                # Custom raw mode that keeps output post-processing (OPOST) enabled
+                # to prevent the "staircase effect" (newlines not returning to column 0)
+                new_settings = termios.tcgetattr(self.fd)
+                new_settings[0] &= ~(termios.BRKINT | termios.ICRNL | termios.INPCK | termios.ISTRIP | termios.IXON)
+                # Preserve new_settings[1] (OPOST)
+                new_settings[3] &= ~(termios.ECHO | termios.ICANON | termios.IEXTEN | termios.ISIG)
+                new_settings[6][termios.VMIN] = 1
+                new_settings[6][termios.VTIME] = 0
+                
+                termios.tcsetattr(self.fd, termios.TCSADRAIN, new_settings)
                 _in_raw_mode = True
+                _raw_fd = self.fd
             except Exception:
                 self.fd = None
                 self.old_settings = None
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        global _in_raw_mode
+        global _in_raw_mode, _raw_fd
         if os.name != 'nt' and getattr(self, 'fd', None) is not None and getattr(self, 'old_settings', None) is not None:
             try:
                 termios.tcsetattr(self.fd, termios.TCSADRAIN, self.old_settings)
             except Exception:
                 pass
             _in_raw_mode = False
+            _raw_fd = None
 
 def read_key():
     if os.name == 'nt':
@@ -319,23 +332,23 @@ def read_key():
             except Exception:
                 return KEY_ESC
 
-        if _in_raw_mode:
+        if _in_raw_mode and _raw_fd is not None:
             try:
-                ch = sys.stdin.read(1)
-                if not ch:
+                b = os.read(_raw_fd, 1)
+                if not b:
                     return KEY_ESC
-                if ch == '\x1b':
-                    r, _, _ = select.select([sys.stdin], [], [], 0.05)
+                if b == b'\x1b':
+                    r, _, _ = select.select([_raw_fd], [], [], 0.05)
                     if r:
-                        extra = sys.stdin.read(2)
-                        if extra == '[A': return KEY_UP
-                        if extra == '[B': return KEY_DOWN
+                        extra = os.read(_raw_fd, 2)
+                        if extra == b'[A': return KEY_UP
+                        if extra == b'[B': return KEY_DOWN
                     return KEY_ESC
-                if ch in ('\r', '\n'): return KEY_ENTER
-                if ch == ' ': return KEY_SPACE
-                if ch == '\x03': return KEY_CTRL_C
-                if ch in ('a', 'A'): return KEY_A
-                return ch
+                if b in (b'\r', b'\n'): return KEY_ENTER
+                if b == b' ': return KEY_SPACE
+                if b == b'\x03': return KEY_CTRL_C
+                if b in (b'a', b'A'): return KEY_A
+                return b.decode('utf-8', errors='ignore')
             except Exception:
                 return KEY_UNKNOWN
         else:
@@ -351,25 +364,31 @@ def read_key():
                     return KEY_UNKNOWN
 
             try:
-                tty.setraw(fd)
-                r, _, _ = select.select([sys.stdin], [], [])
+                new_settings = termios.tcgetattr(fd)
+                new_settings[0] &= ~(termios.BRKINT | termios.ICRNL | termios.INPCK | termios.ISTRIP | termios.IXON)
+                new_settings[3] &= ~(termios.ECHO | termios.ICANON | termios.IEXTEN | termios.ISIG)
+                new_settings[6][termios.VMIN] = 1
+                new_settings[6][termios.VTIME] = 0
+                termios.tcsetattr(fd, termios.TCSADRAIN, new_settings)
+
+                r, _, _ = select.select([fd], [], [])
                 if not r:
                     return KEY_UNKNOWN
-                ch = sys.stdin.read(1)
-                if not ch:
+                b = os.read(fd, 1)
+                if not b:
                     return KEY_ESC
-                if ch == '\x1b':
-                    r, _, _ = select.select([sys.stdin], [], [], 0.05)
+                if b == b'\x1b':
+                    r, _, _ = select.select([fd], [], [], 0.05)
                     if r:
-                        extra = sys.stdin.read(2)
-                        if extra == '[A': return KEY_UP
-                        if extra == '[B': return KEY_DOWN
+                        extra = os.read(fd, 2)
+                        if extra == b'[A': return KEY_UP
+                        if extra == b'[B': return KEY_DOWN
                     return KEY_ESC
-                if ch in ('\r', '\n'): return KEY_ENTER
-                if ch == ' ': return KEY_SPACE
-                if ch == '\x03': return KEY_CTRL_C
-                if ch in ('a', 'A'): return KEY_A
-                return ch
+                if b in (b'\r', b'\n'): return KEY_ENTER
+                if b == b' ': return KEY_SPACE
+                if b == b'\x03': return KEY_CTRL_C
+                if b in (b'a', b'A'): return KEY_A
+                return b.decode('utf-8', errors='ignore')
             except Exception:
                 return KEY_UNKNOWN
             finally:
@@ -377,6 +396,7 @@ def read_key():
                     termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
                 except Exception:
                     pass
+
 
 
 def flush_input_buffer():
@@ -2302,10 +2322,15 @@ def run_app():
                 break
         except Exception as exc:
             console.print(f"\n[bold {THEME['error']}]{get_icon('cross')}Unexpected error: {exc}[/bold {THEME['error']}]")
+            import traceback
+            traceback.print_exc()
             console.print(f"[{THEME['dim']}]Press any key to continue...[/{THEME['dim']}]")
             read_key()
             if len(stack) > 1:
                 stack.pop()
+            else:
+                break
+
 
 
 # ════════════════════════════════════════════════════════════
