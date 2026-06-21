@@ -11,6 +11,72 @@ High-performance terminal client:
   * Cross-platform: Windows and Linux
 """
 
+# ── Check and Install Missing Python Dependencies ──
+def check_and_install_dependencies():
+    required_packages = {
+        "requests": "requests",
+        "bs4": "beautifulsoup4",
+        "rich": "rich",
+        "playwright": "playwright",
+    }
+    
+    crypto_installed = False
+    try:
+        from Cryptodome.Cipher import AES
+        crypto_installed = True
+    except ImportError:
+        try:
+            from Crypto.Cipher import AES
+            crypto_installed = True
+        except ImportError:
+            pass
+            
+    missing_packages = []
+    for imp_name, pip_name in required_packages.items():
+        try:
+            __import__(imp_name)
+        except ImportError:
+            missing_packages.append(pip_name)
+            
+    if not crypto_installed:
+        missing_packages.append("pycryptodome")
+        
+    if missing_packages:
+        print("Missing required libraries: " + ", ".join(missing_packages))
+        print("Attempting to install them automatically...")
+        import sys
+        import subprocess
+        
+        pip_cmd = [sys.executable, "-m", "pip", "install"] + missing_packages
+        installed_ok = False
+        try:
+            subprocess.run(pip_cmd, check=True)
+            installed_ok = True
+        except Exception:
+            try:
+                print("Retrying with bypass flags (--user --break-system-packages)...")
+                fallback_cmd = [sys.executable, "-m", "pip", "install", "--user", "--break-system-packages"] + missing_packages
+                subprocess.run(fallback_cmd, check=True)
+                installed_ok = True
+            except Exception as e:
+                print(f"Error installing dependencies: {e}")
+                print("Please install them manually using: pip install " + " ".join(missing_packages))
+                sys.exit(1)
+                
+        if installed_ok:
+            print("Successfully installed missing libraries!")
+            if "playwright" in missing_packages:
+                print("Installing Playwright Chromium browser binaries...")
+                try:
+                    playwright_install_cmd = [sys.executable, "-m", "playwright", "install", "chromium"]
+                    subprocess.run(playwright_install_cmd, check=True)
+                    print("Playwright Chromium browser installed successfully!")
+                except Exception as e:
+                    print(f"Warning: Playwright browser installation failed: {e}")
+                    print("You may need to run 'playwright install' manually later.")
+
+check_and_install_dependencies()
+
 import asyncio
 import base64
 import json
@@ -41,6 +107,8 @@ from rich.table import Table
 from rich.live import Live
 from rich.text import Text
 from rich.columns import Columns
+from rich import box as rich_box
+
 
 # Conditional platform-specific imports
 if os.name == 'nt':
@@ -85,6 +153,7 @@ def load_config():
         "default_quality": "auto",
         "preferred_browser": "auto",
         "history_tracking": True,
+        "fullscreen": True,
         "custom_player_args": "",
         "nerd_fonts": False,
         "search_history": [],
@@ -481,7 +550,8 @@ def print_logo():
     panel = Panel(
         styled_logo,
         border_style=THEME['border'],
-        padding=(0, 2),
+        padding=(1, 4),
+        box=rich_box.ROUNDED,
         expand=False,
     )
     console.print(panel)
@@ -543,7 +613,9 @@ def interactive_select(options, title="Select Option"):
                 table,
                 title=f"[bold {THEME['primary']}]{title} {page_info}[/bold {THEME['primary']}]",
                 border_style=THEME['border'],
-                expand=False
+                box=rich_box.ROUNDED,
+                expand=False,
+                padding=(1, 2)
             )
             return panel
 
@@ -634,7 +706,9 @@ def interactive_checklist(options, title="Select Episodes", default_start_idx=0,
                 title=f"[bold {THEME['primary']}]{title}{fav_icon} {page_info}[/bold {THEME['primary']}]",
                 subtitle=f"[dim {THEME['dim']}]SPACE=toggle  SPACE+↕=drag  A=all  F=fav  ENTER=confirm  ESC=back[/dim {THEME['dim']}]",
                 border_style=THEME['border'],
-                expand=False
+                box=rich_box.ROUNDED,
+                expand=False,
+                padding=(1, 2)
             )
             return panel
 
@@ -1146,7 +1220,8 @@ def play_with_vlc(stream_urls):
     custom_args = cfg.get("custom_player_args", "").strip()
     user_args = custom_args.split() if custom_args else []
 
-    cmd = [vlc_path] + user_args + stream_urls
+    fs_arg = ["--fullscreen"] if cfg.get("fullscreen", True) else []
+    cmd = [vlc_path] + fs_arg + user_args + stream_urls
     try:
         if os.name == 'nt':
             subprocess.Popen(cmd, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS)
@@ -1169,10 +1244,12 @@ def play_with_mpv(stream_urls):
     custom_args = cfg.get("custom_player_args", "").strip()
     user_args = custom_args.split() if custom_args else []
 
+    fs_arg = ["--fullscreen"] if cfg.get("fullscreen", True) else []
+
     if is_mpvnet:
-        cmd = [mpv_path] + user_args + stream_urls
+        cmd = [mpv_path] + fs_arg + user_args + stream_urls
     else:
-        cmd = [mpv_path, "--force-window", "--keep-open=yes"] + user_args + stream_urls
+        cmd = [mpv_path, "--force-window", "--keep-open=yes"] + fs_arg + user_args + stream_urls
 
     try:
         if os.name == 'nt':
@@ -2031,6 +2108,7 @@ def run_app():
                 current_quality = cfg.get("default_quality", "auto")
                 current_browser = cfg.get("preferred_browser", "auto")
                 history_enabled = cfg.get("history_tracking", True)
+                fullscreen_enabled = cfg.get("fullscreen", True)
                 player_args = cfg.get("custom_player_args", "")
 
                 # Show current player status
@@ -2052,6 +2130,7 @@ def run_app():
                 diag_table.add_row("Default Stream Quality", current_quality.upper())
                 diag_table.add_row("Cookie Extraction Browser", current_browser.upper())
                 diag_table.add_row("Watch History Tracking", "Enabled" if history_enabled else f"Disabled [bold {THEME['warning']}]({get_icon('warning')}Private Mode)[/bold {THEME['warning']}]")
+                diag_table.add_row("Auto Fullscreen Mode", "Enabled" if fullscreen_enabled else "Disabled")
                 diag_table.add_row("Custom Player Arguments", player_args if player_args else f"[dim {THEME['dim']}]None[/dim {THEME['dim']}]")
                 diag_table.add_row("Nerd Font Icons Support", f"Enabled ({get_icon('check')}Active)" if use_nerd else "Disabled (Standard Unicode)")
                 diag_table.add_row("Configuration File Path", f"[dim {THEME['dim']}]{get_config_path()}[/dim {THEME['dim']}]")
@@ -2064,6 +2143,7 @@ def run_app():
                     f"Default Video Quality  (Current: {current_quality.upper()})",
                     f"Cookie Sync Browser    (Current: {current_browser.upper()})",
                     f"History Tracking       (Current: {'ENABLED' if history_enabled else 'DISABLED'})",
+                    f"Auto Fullscreen        (Current: {'ENABLED' if fullscreen_enabled else 'DISABLED'})",
                     f"Custom Player Args     (Current: '{player_args if player_args else 'None'}')",
                     f"Nerd Font Icons        (Current: {'ENABLED' if use_nerd else 'DISABLED'})",
                     "Clear Search History",
@@ -2072,7 +2152,7 @@ def run_app():
                 ]
 
                 sel_idx, sel_opt = interactive_select(settings_opts, "Configuration / Settings")
-                if sel_idx == -1 or sel_idx == 8:
+                if sel_idx == -1 or sel_idx == 9:
                     stack.pop()
                     continue
 
@@ -2130,6 +2210,14 @@ def run_app():
                     time.sleep(1.0)
 
                 elif sel_idx == 4:
+                    # Fullscreen toggle
+                    cfg["fullscreen"] = not fullscreen_enabled
+                    save_config(cfg)
+                    status_str = "ENABLED" if not fullscreen_enabled else "DISABLED"
+                    console.print(f"\n[bold {THEME['success']}]" + get_icon("check") + f"Auto Fullscreen set to: {status_str}[/bold {THEME['success']}]")
+                    time.sleep(1.0)
+
+                elif sel_idx == 5:
                     # Custom Player Args
                     console.print(f"\n[bold {THEME['primary']}]" + get_icon("settings") + "Custom Player Arguments[/bold {THEME['primary']}]")
                     console.print(f"[dim {THEME['dim']}]Enter custom command-line arguments to pass to the player (e.g. --fs --volume=80).[/dim {THEME['dim']}]")
@@ -2141,7 +2229,7 @@ def run_app():
                         console.print(f"\n[bold {THEME['success']}]" + get_icon("check") + "Custom player arguments updated![/bold {THEME['success']}]")
                         time.sleep(1.0)
 
-                elif sel_idx == 5:
+                elif sel_idx == 6:
                     # Nerd Fonts toggle
                     cfg["nerd_fonts"] = not use_nerd
                     save_config(cfg)
@@ -2149,13 +2237,19 @@ def run_app():
                     console.print(f"\n[bold {THEME['success']}]" + get_icon("check") + f"Nerd Font Icons support set to: {status_str}[/bold {THEME['success']}]")
                     time.sleep(1.0)
 
-                elif sel_idx == 6:
+                elif sel_idx == 7:
                     cfg["search_history"] = []
                     save_config(cfg)
                     console.print(f"\n[bold {THEME['success']}]" + get_icon("check") + "Search history cleared![/bold {THEME['success']}]")
                     time.sleep(1.0)
 
-                elif sel_idx == 7:
+                elif sel_idx == 8:
+                    cfg["history"] = {}
+                    cfg["favorites"] = []
+                    save_config(cfg)
+                    console.print(f"\n[bold {THEME['success']}]" + get_icon("check") + "Watch history and bookmarks cleared![/bold {THEME['success']}]")
+                    time.sleep(1.0)
+
                     cfg["history"] = {}
                     cfg["favorites"] = []
                     save_config(cfg)
